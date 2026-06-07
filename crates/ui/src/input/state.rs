@@ -4,12 +4,12 @@
 //! https://github.com/zed-industries/zed/blob/main/crates/gpui/examples/input.rs
 use anyhow::Result;
 use gpui::{
-    Action, App, AppContext, Bounds, ClipboardItem, Context, Edges, Entity, EntityInputHandler,
-    EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyBinding,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
-    Pixels, Point, Render, ScrollHandle, ScrollWheelEvent, ShapedLine, SharedString, Styled as _,
-    Subscription, Task, UTF16Selection, Window, actions, div, point, prelude::FluentBuilder as _,
-    px,
+    Action, App, AppContext, Bounds, ClipboardEntry, ClipboardItem, Context, Edges, Entity,
+    EntityInputHandler, EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
+    KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ParentElement as _, Pixels, Point, Render, ScrollHandle, ScrollWheelEvent, ShapedLine,
+    SharedString, Styled as _, Subscription, Task, UTF16Selection, Window, actions, div, point,
+    prelude::FluentBuilder as _, px,
 };
 use gpui::{Half, TextAlign};
 use ropey::{Rope, RopeSlice};
@@ -120,9 +120,16 @@ actions!(
 #[derive(Clone)]
 pub enum InputEvent {
     Change,
-    PressEnter { secondary: bool, shift: bool },
+    PressEnter {
+        secondary: bool,
+        shift: bool,
+    },
     Focus,
     Blur,
+    /// Emitted on paste when the clipboard contains an image. Text inputs can't hold images,
+    /// so a host view (e.g. a chat composer) can subscribe and attach the clipboard image itself
+    /// (re-read via `cx.read_from_clipboard()`). Any text in the same paste is still inserted.
+    PasteImage,
 }
 
 pub(super) const CONTEXT: &str = "Input";
@@ -1802,6 +1809,13 @@ impl InputState {
 
     pub(super) fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(clipboard) = cx.read_from_clipboard() {
+            // Detect an image in the clipboard so a host view can attach it (text inputs can't
+            // hold images). Any text in the same paste is still inserted below.
+            let has_image = clipboard
+                .entries()
+                .iter()
+                .any(|e| matches!(e, ClipboardEntry::Image(_)));
+
             let mut new_text = clipboard.text().unwrap_or_default();
             if !self.mode.is_multi_line() {
                 new_text = new_text.replace('\n', "");
@@ -1809,6 +1823,10 @@ impl InputState {
 
             self.replace_text_in_range_silent(None, &new_text, window, cx);
             self.scroll_to(self.cursor(), None, cx);
+
+            if has_image {
+                cx.emit(InputEvent::PasteImage);
+            }
         }
     }
 
