@@ -1,10 +1,10 @@
 use std::rc::Rc;
 
 use gpui::{
-    Action, AnyElement, App, AppContext, Context, DismissEvent, Empty, Entity, EventEmitter,
-    Half as _, HighlightStyle, InteractiveElement as _, IntoElement, ParentElement, Pixels, Point,
-    Render, RenderOnce, SharedString, Styled, StyledText, Subscription, Window, deferred, div,
-    prelude::FluentBuilder, px, relative,
+    Action, Anchor, AnyElement, App, AppContext, Context, DismissEvent, Empty, Entity,
+    EventEmitter, Half as _, HighlightStyle, InteractiveElement as _, IntoElement, ParentElement,
+    Pixels, Point, Render, RenderOnce, SharedString, Styled, StyledText, Subscription, Window,
+    anchored, deferred, div, prelude::FluentBuilder, px, relative,
 };
 use lsp_types::{CompletionItem, CompletionTextEdit};
 
@@ -414,43 +414,72 @@ impl Render for CompletionMenu {
             abs_pos.x + MAX_MENU_WIDTH + POPOVER_GAP + MAX_MENU_WIDTH + POPOVER_GAP
                 > window.bounds().size.width;
 
-        deferred(
-            div()
-                .absolute()
-                .left(pos.x)
-                .top(pos.y)
-                .flex()
-                .flex_row()
-                .gap(POPOVER_GAP)
-                .items_start()
-                .when(vertical_layout, |this| this.flex_col())
-                .child(
-                    editor_popover("completion-menu", cx)
-                        .max_w(max_width)
-                        .min_w(px(120.))
-                        .child(List::new(&self.list).max_h(MAX_MENU_HEIGHT)),
-                )
-                .when_some(selected_documentation, |this, documentation| {
-                    let mut doc = match documentation {
-                        lsp_types::Documentation::String(s) => s.clone(),
-                        lsp_types::Documentation::MarkupContent(mc) => mc.value.clone(),
-                    };
-                    if vertical_layout {
-                        doc = doc.split("\n").next().unwrap_or_default().to_string();
-                    }
+        // Open below the cursor by default, but flip above it when the menu would be clipped by
+        // the bottom of the window and there is more room above (e.g. an input near the bottom of
+        // the window, like a chat composer). We pick the anchor corner explicitly instead of
+        // relying on `anchored`'s `SwitchAnchor`, because that flips around the same point and
+        // would overlap the current line; here we anchor the menu's bottom just above the cursor
+        // line. `snap_to_window_with_margin` then clamps any residual overflow.
+        let line_height = self
+            .editor
+            .read(cx)
+            .last_layout
+            .as_ref()
+            .map(|l| l.line_height)
+            .unwrap_or(px(20.));
+        let window_height = window.bounds().size.height;
+        let space_below = window_height - abs_pos.y;
+        // `abs_pos.y` sits one line below the cursor (origin() adds line_height + gap), so subtract
+        // it back to get the top of the cursor's line.
+        let cursor_line_top = abs_pos.y - line_height - POPOVER_GAP;
+        let flip_up = space_below < MAX_MENU_HEIGHT && cursor_line_top > space_below;
+        let (anchor, anchor_pos) = if flip_up {
+            // Bottom-left of the menu sits a small gap above the cursor line; it grows upward.
+            (Anchor::BottomLeft, Point::new(abs_pos.x, cursor_line_top))
+        } else {
+            (Anchor::TopLeft, abs_pos)
+        };
 
-                    this.child(
-                        div().child(
+        deferred(
+            anchored()
+                .anchor(anchor)
+                .position(anchor_pos)
+                .snap_to_window_with_margin(px(8.))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap(POPOVER_GAP)
+                        .items_start()
+                        .when(vertical_layout, |this| this.flex_col())
+                        .child(
                             editor_popover("completion-menu", cx)
-                                .w(MAX_MENU_WIDTH)
-                                .px_2()
-                                .child(render_markdown("doc", doc, window, cx)),
-                        ),
-                    )
-                })
-                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    this.hide(cx);
-                })),
+                                .max_w(max_width)
+                                .min_w(px(120.))
+                                .child(List::new(&self.list).max_h(MAX_MENU_HEIGHT)),
+                        )
+                        .when_some(selected_documentation, |this, documentation| {
+                            let mut doc = match documentation {
+                                lsp_types::Documentation::String(s) => s.clone(),
+                                lsp_types::Documentation::MarkupContent(mc) => mc.value.clone(),
+                            };
+                            if vertical_layout {
+                                doc = doc.split("\n").next().unwrap_or_default().to_string();
+                            }
+
+                            this.child(
+                                div().child(
+                                    editor_popover("completion-menu", cx)
+                                        .w(MAX_MENU_WIDTH)
+                                        .px_2()
+                                        .child(render_markdown("doc", doc, window, cx)),
+                                ),
+                            )
+                        })
+                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                            this.hide(cx);
+                        })),
+                ),
         )
         .into_any_element()
     }
